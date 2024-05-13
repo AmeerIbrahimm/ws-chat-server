@@ -1,0 +1,67 @@
+use std::time::{Duration, Instant};
+
+use actix::prelude::*;
+use actix_web_actors::ws;
+
+/// How ofter heart beat signal is sent
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How long before lack of client resoponse causes a timeout
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// websocket is long running it is easier to manage with an actor
+pub struct MyWebSocket {
+    /// Client must send ping at least one per 10 second (CURRENT_TIMEOUT).
+    /// otherwise we drop the connection
+    hb: Instant,
+}
+
+impl MyWebSocket {
+    pub fn new() -> Self {
+        Self { hb: Instant::now() }
+    }
+
+    /// helper fn for sending heartbeat every (HEARTBEAT_INTERVAL)
+    fn hb(&self, ctx: &mut <Self as Actor>::Context) {
+        ctx.run_interval(HEARTBEAT_INTERVAL, |act, ctx| {
+            if Instant::now().duration_since(act.hb) > CLIENT_TIMEOUT {
+                println!("websocket heartbeat failed, disconnecting!");
+
+                // stop actor
+                ctx.stop();
+
+                // don't try to ping if ctx is stopped
+                return;
+            }
+            ctx.ping(b"");
+        });
+    }
+}
+
+impl Actor for MyWebSocket {
+    type Context = ws::WebsocketContext<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.hb(ctx);
+    }
+}
+
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWebSocket {
+    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        println!("{:?}", msg);
+        match msg {
+            Ok(ws::Message::Ping(msg)) => {
+                self.hb = Instant::now();
+                ctx.pong(&msg);
+            }
+            Ok(ws::Message::Pong(_)) => self.hb = Instant::now(),
+            Ok(ws::Message::Text(text)) => ctx.text(text),
+            Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
+            Ok(ws::Message::Close(reason)) => {
+                ctx.close(reason);
+                ctx.stop()
+            }
+            _ => ctx.stop(),
+        }
+    }
+}
