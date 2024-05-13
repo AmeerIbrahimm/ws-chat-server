@@ -24,6 +24,7 @@ async fn hello() -> impl Responder {
     HttpResponse::Ok().body("Hello World!")
 }
 
+// echo ws handler
 async fn echo_ws(req: HttpRequest, stream:  web::Payload) -> impl Responder {
     ws::start(MyWebSocket::new(), &req, stream)
 }
