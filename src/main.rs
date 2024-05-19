@@ -1,30 +1,43 @@
-use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer, Responder};
-use actix_web_actors::ws;
+use anyhow::Result;
+use std::time::Duration;
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
+    sync::broadcast::{Receiver, Sender},
+};
 
-mod server;
+#[tokio::main]
+async fn main() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
 
-use server::MyWebSocket;
+    let (tx, _): (Sender<String>, Receiver<String>) = tokio::sync::broadcast::channel(10);
+    let tx1 = tx.clone();
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
+    tokio::spawn(async move {
+        for _ in 0..1000 {
+             tx.send("hello".into())?;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
 
-    HttpServer::new(|| {
-        App::new()
-            .service(web::resource("/").to(hello))
-            .service(web::resource("/ws").route(web::get().to(echo_ws)))
-            .wrap(middleware::Logger::default())
-    })
-    .workers(2)
-    .bind(("127.0.0.1", 8080))?
-    .run()
-    .await
+    while let Ok((socket, _)) = listener.accept().await {
+        let mut rx = tx1.subscribe();
+        println!("new socket");
+        tokio::spawn(async move { process_socket(socket, rx).await });
+    }
+    Ok(())
 }
 
-async fn hello() -> impl Responder {
-    HttpResponse::Ok().body("Hello World!")
-}
+async fn process_socket(mut socket: TcpStream, mut rx: Receiver<String>) -> Result<()> {
+    match socket.write_all("connected".as_bytes()).await {
+        Ok(_) => {}
+        Err(e) => {
+            println!("e: {:?}", e);
+        }
+    }
 
-// echo ws handler
-async fn echo_ws(req: HttpRequest, stream:  web::Payload) -> impl Responder {
-    ws::start(MyWebSocket::new(), &req, stream)
+    while let Ok(msg) = rx.recv().await {
+         socket.write_all(msg.as_bytes()).await?
+    }
+    Ok(())
 }
